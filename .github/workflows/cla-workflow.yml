@@ -186,13 +186,22 @@ jobs:
               console.log(`CLA filename: ${claFilename}`);
 
               // 1. 创建 CLA 文件到 DIPCNPO/CLA 仓库
+              // 移除 repository 部分，只保留 CLA 内容
+              let claContent = issueBody;
+              // 查找 --- 分隔符和 **repository:** 部分
+              const repoMatch = claContent.match(/\n---\s*\n\s*\*\*repository[：:]\*\*/);
+              if (repoMatch) {
+                // 只保留分隔符之前的内容
+                claContent = claContent.substring(0, repoMatch.index).trim();
+              }
+              
               console.log('Creating CLA file in DIPCNPO/CLA...');
               await createOrUpdateFile(
                 claOctokit,
                 'DIPCNPO',
                 'CLA',
                 claFilename,
-                issueBody,
+                claContent,
                 `Add CLA file from ${workflowRepoOwner}/${workflowRepoName} Issue #${issueNumber}\n\n- User: ${username}\n- File: ${claFilename}\n- Issue: #${issueNumber}`
               );
               console.log('✅ CLA file created');
