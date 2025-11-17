@@ -1,2 +1,2 @@
 # creations
-List of creations created using [DIPCP](https://github.com/DIPCPNPO/DIPCP)
+List of creations created using [DIPCP](https://github.com/DIPCNPO/DIPCP)
