@@ -18,846 +18,395 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Checkout CLA repository
-        uses: actions/checkout@v4
-        continue-on-error: true
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          repository: DIPCNPO/CLA
-          token: ${{ secrets.CLA_REPOSITORY_TOKEN }}
-          path: cla-repo
-          fetch-depth: 0
-      
-      - name: Checkout creations repository
-        uses: actions/checkout@v4
-        continue-on-error: true
-        with:
-          repository: DIPCNPO/creations
-          token: ${{ secrets.CLA_REPOSITORY_TOKEN }}
-          path: creations-repo
-          fetch-depth: 0
-      
-      - name: Setup Git for CLA repository
-        continue-on-error: false
-        run: |
-          cd cla-repo
-          
-          git config user.name "CLA Transfer Bot" || echo "⚠️  Warning: Failed to set user.name"
-          git config user.email "cla-transfer@DIPCNPO.org" || echo "⚠️  Warning: Failed to set user.email"
-          
-          # Initialize remote if not exists
-          if ! git remote get-url origin >/dev/null 2>&1; then
-            echo "Adding origin remote..."
-            git remote add origin https://github.com/DIPCNPO/CLA.git || echo "⚠️  Warning: Remote may already exist"
-          fi
-          
-          # Remove all invalid remote refs
-          echo "Cleaning invalid remote refs..."
-          git for-each-ref --format='%(refname)' refs/remotes/origin 2>/dev/null | while read ref; do
-            if [ ! -z "$ref" ] && ! git rev-parse --verify "$ref^{commit}" >/dev/null 2>&1; then
-              git update-ref -d "$ref" 2>/dev/null || true
-            fi
-          done || true
-          
-          # Remove invalid local refs
-          echo "Cleaning invalid local refs..."
-          git update-ref -d refs/heads/main 2>/dev/null || true
-          git update-ref -d refs/remotes/origin/main 2>/dev/null || true
-          git update-ref -d refs/remotes/origin/HEAD 2>/dev/null || true
-          
-          # Check if repository has any commits
-          if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
-            echo "Repository is empty, creating orphan main branch"
-            if ! git checkout --orphan main 2>/dev/null; then
-              # If checkout fails, try to reset and create fresh
-              echo "Retrying orphan branch creation..."
-              rm -rf .git/refs/heads/main .git/refs/remotes/origin/main 2>/dev/null || true
-              git checkout --orphan main
-            fi
-            # Remove all files from staging area for orphan branch
-            git rm -rf . 2>/dev/null || true
-            echo "✅ Created orphan main branch"
-          elif git show-ref --verify --quiet refs/heads/main; then
-            echo "Checking out existing main branch"
-            git checkout main || { echo "❌ Failed to checkout main branch"; exit 1; }
-          else
-            echo "Creating main branch from HEAD"
-            git checkout -b main || { echo "❌ Failed to create main branch"; exit 1; }
-          fi
-          
-          echo "✅ Git setup completed successfully"
-      
-      - name: Extract CLA information from issue
-        id: extract_cla
-        run: |
-          # Extract username from issue title
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ISSUE_BODY="${{ github.event.issue.body }}"
-          
-          # Extract username (format: "CLA Submission - username")
-          if [[ "$ISSUE_TITLE" =~ CLA\ Submission\ -\ (.+) ]]; then
-            USERNAME="${BASH_REMATCH[1]}"
-            # Trim whitespace
-            USERNAME=$(echo "$USERNAME" | xargs)
-            if [ -z "$USERNAME" ]; then
-              echo "❌ Error: Username is empty after extraction from title: $ISSUE_TITLE"
-              exit 1
-            fi
-          else
-            echo "❌ Error: Could not extract username from issue title"
-            echo "   Expected format: 'CLA Submission - username'"
-            echo "   Actual title: $ISSUE_TITLE"
-            exit 1
-          fi
-          
-          # Extract repository information from issue body (new format: **repository:** JSON)
-          REPO_OWNER=""
-          REPO_NAME=""
-          REPO_DESCRIPTION=""
-          PROJECT_NAME=""
-          PROJECT_LANGUAGE=""
-          PROJECT_CATEGORY=""
-          IS_ROOT_AUTHOR=false
-          
-          # Extract JSON from **repository:** line
-          REPO_JSON_LINE=$(echo "$ISSUE_BODY" | grep -E "^\*\*repository[：:]\*\*" | head -1)
-          if [ -n "$REPO_JSON_LINE" ]; then
-            REPO_JSON=$(echo "$REPO_JSON_LINE" | sed -E 's/^\*\*repository[：:]\*\*[[:space:]]*//' | xargs)
-            
-            if [ -n "$REPO_JSON" ] && [ "$REPO_JSON" != "''" ] && [ "$REPO_JSON" != '""' ] && [ "$REPO_JSON" != "null" ]; then
-              # Parse JSON using Python (available in GitHub Actions)
-              # Use a temporary file to avoid shell quoting issues
-              echo "$REPO_JSON" > /tmp/repo_json.txt
-              
-              REPO_DATA=$(python3 <<'PYTHON_SCRIPT'
-import json
-import sys
+          node-version: '20'
 
-try:
-    with open('/tmp/repo_json.txt', 'r', encoding='utf-8') as f:
-        repo_json = f.read().strip()
-    
-    if not repo_json or repo_json in ['', "''", '""', 'null']:
-        sys.exit(1)
-    
-    repo_info = json.loads(repo_json)
-    
-    # Extract fields
-    owner = repo_info.get('owner', '')
-    repo = repo_info.get('repo', '')
-    name = repo_info.get('name', '')
-    description = repo_info.get('description', '')
-    language = repo_info.get('language', '')
-    category = repo_info.get('category', '')
-    repository = repo_info.get('repository', '')
-    
-    # If repository field exists, parse it
-    if repository and '/' in repository:
-        parts = repository.split('/', 1)
-        if not owner:
-            owner = parts[0]
-        if not repo:
-            repo = parts[1]
-    
-    # Determine if root author (has name field)
-    is_root_author = 'true' if name else 'false'
-    
-    # Output as key=value pairs (escape newlines for shell)
-    def safe_value(v):
-        return str(v).replace('\n', ' ').replace('\r', ' ').replace('\0', '')
-    
-    print(f"REPO_OWNER={safe_value(owner)}")
-    print(f"REPO_NAME={safe_value(repo)}")
-    print(f"REPO_DESCRIPTION={safe_value(description)}")
-    print(f"PROJECT_NAME={safe_value(name)}")
-    print(f"PROJECT_LANGUAGE={safe_value(language)}")
-    print(f"PROJECT_CATEGORY={safe_value(category)}")
-    print(f"IS_ROOT_AUTHOR={is_root_author}")
-except Exception as e:
-    sys.exit(1)
-PYTHON_SCRIPT
-)
-              
-              if [ $? -eq 0 ] && [ -n "$REPO_DATA" ]; then
-                # Parse the output
-                while IFS='=' read -r key value; do
-                  case "$key" in
-                    REPO_OWNER)
-                      REPO_OWNER="$value"
-                      ;;
-                    REPO_NAME)
-                      REPO_NAME="$value"
-                      ;;
-                    REPO_DESCRIPTION)
-                      REPO_DESCRIPTION="$value"
-                      ;;
-                    PROJECT_NAME)
-                      PROJECT_NAME="$value"
-                      ;;
-                    PROJECT_LANGUAGE)
-                      PROJECT_LANGUAGE="$value"
-                      ;;
-                    PROJECT_CATEGORY)
-                      PROJECT_CATEGORY="$value"
-                      ;;
-                    IS_ROOT_AUTHOR)
-                      if [ "$value" = "true" ]; then
-                        IS_ROOT_AUTHOR=true
-                      fi
-                      ;;
-                  esac
-                done <<< "$REPO_DATA"
-              fi
-              
-              # Clean up temp file
-              rm -f /tmp/repo_json.txt
-            fi
-          fi
-          
-          # If repository info not found, use default
-          if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
-            REPO_OWNER="DIPCNPO"
-            REPO_NAME="creations"
-          fi
-          
-          echo "username=$USERNAME" >> $GITHUB_OUTPUT
-          echo "repo_owner=$REPO_OWNER" >> $GITHUB_OUTPUT
-          echo "repo_name=$REPO_NAME" >> $GITHUB_OUTPUT
-          echo "repo_description=$REPO_DESCRIPTION" >> $GITHUB_OUTPUT
-          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
-          echo "project_language=$PROJECT_LANGUAGE" >> $GITHUB_OUTPUT
-          echo "project_category=$PROJECT_CATEGORY" >> $GITHUB_OUTPUT
-          echo "is_root_author=$IS_ROOT_AUTHOR" >> $GITHUB_OUTPUT
-          
-          # Generate filename
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H-%M-%S-000Z")
-          CLA_FILENAME="${USERNAME}_${TIMESTAMP}.md"
-          echo "cla_filename=$CLA_FILENAME" >> $GITHUB_OUTPUT
-          
-          echo "Extracted information:"
-          echo "  Username: $USERNAME"
-          echo "  Repository: $REPO_OWNER/$REPO_NAME"
-          echo "  Filename: $CLA_FILENAME"
-      
-      - name: Create CLA file in CLA repository
+      - name: Install dependencies
         run: |
-          # Save CLA file to root directory of CLA repository
-          CLA_FILE="cla-repo/${{ steps.extract_cla.outputs.cla_filename }}"
-          
-          # Copy CLA content directly from issue body
-          echo "${{ github.event.issue.body }}" > "$CLA_FILE"
-          
-          # Verify file was created
-          if [ ! -f "$CLA_FILE" ]; then
-            echo "❌ Error: CLA file was not created at $CLA_FILE"
-            exit 1
-          fi
-          
-          FILE_SIZE=$(stat -f%z "$CLA_FILE" 2>/dev/null || stat -c%s "$CLA_FILE" 2>/dev/null || echo "0")
-          if [ "$FILE_SIZE" -eq 0 ]; then
-            echo "⚠️  Warning: CLA file is empty"
-          fi
-          
-          echo "✅ Created CLA file: $CLA_FILE (size: ${FILE_SIZE} bytes)"
-      
-      - name: Commit to CLA repository
+          npm install @octokit/rest
+
+      - name: Process CLA submission
+        env:
+          CLA_REPOSITORY_TOKEN: ${{ secrets.CLA_REPOSITORY_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          cd cla-repo
-          
-          # Remove any invalid remote refs before checking out
-          git update-ref -d refs/remotes/origin/main 2>/dev/null || true
-          
-          # Ensure we're on main branch
-          CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-          if [ -z "$CURRENT_BRANCH" ] || [ "$CURRENT_BRANCH" != "main" ]; then
-            if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
-              # Repository is empty, ensure we're on orphan main branch
-              git update-ref -d refs/heads/main 2>/dev/null || true
-              git checkout --orphan main
-            elif git show-ref --verify --quiet refs/heads/main; then
-              git checkout main
-            else
-              # Create branch from current HEAD if it exists, otherwise orphan
-              if git rev-parse --verify HEAD >/dev/null 2>&1; then
-                git checkout -b main
-              else
-                git checkout --orphan main
-              fi
-            fi
-          fi
-          
-          # Verify CLA file exists before committing
-          CLA_FILE_PATH="${{ steps.extract_cla.outputs.cla_filename }}"
-          if [ ! -f "$CLA_FILE_PATH" ]; then
-            echo "❌ Error: CLA file not found at $CLA_FILE_PATH"
-            echo "Files in repository:"
-            find . -type f | head -20
-            exit 1
-          fi
-          
-          echo "Adding CLA file to git: $CLA_FILE_PATH"
-          git add "$CLA_FILE_PATH" || {
-            echo "❌ Error: Failed to add CLA file to git"
-            git status
-            exit 1
+          node << 'EOF'
+          const { Octokit } = require('@octokit/rest');
+          const fs = require('fs');
+          const path = require('path');
+          const { execSync } = require('child_process');
+
+          // 获取环境变量
+          const claToken = process.env.CLA_REPOSITORY_TOKEN;
+          const githubToken = process.env.GITHUB_TOKEN;
+          const issueTitle = process.env.ISSUE_TITLE;
+          const issueBody = process.env.ISSUE_BODY;
+          const issueNumber = parseInt(process.env.ISSUE_NUMBER);
+          const repoOwner = process.env.REPO_OWNER;
+          const repoName = process.env.REPO_NAME;
+
+          // 初始化 Octokit 客户端
+          const claOctokit = new Octokit({ auth: claToken });
+          const githubOctokit = new Octokit({ auth: githubToken });
+
+          // 提取用户名（格式：CLA Submission - username）
+          function extractUsername(title) {
+            const match = title.match(/CLA\s+Submission\s+-\s+(.+)/);
+            if (match && match[1]) {
+              return match[1].trim();
+            }
+            throw new Error(`Could not extract username from title: ${title}`);
           }
-          
-          # Check if there are changes to commit
-          if git diff --staged --quiet; then
-            echo "⚠️  Warning: No changes to commit (file may already be committed)"
-          else
-            git commit -m "Add CLA file from Projects repository Issue #${{ github.event.issue.number }}
 
-          - User: ${{ steps.extract_cla.outputs.username }}
-          - File: ${{ steps.extract_cla.outputs.cla_filename }}
-          - Issue: #${{ github.event.issue.number }}" || {
-              echo "❌ Error: Failed to commit CLA file"
-              git status
-              exit 1
-            }
-            echo "✅ Successfully committed CLA file"
-          fi
-          
-          # Push to main branch (create if doesn't exist)
-          # Retry push in case of network issues or non-fast-forward errors
-          MAX_PUSH_RETRIES=5
-          PUSH_RETRY=0
-          PUSH_SUCCESS=false
-          PUSH_ERROR=""
-          
-          while [ $PUSH_RETRY -lt $MAX_PUSH_RETRIES ] && [ "$PUSH_SUCCESS" = false ]; do
-            echo "Attempting to push (attempt $((PUSH_RETRY + 1))/$MAX_PUSH_RETRIES)..."
-            PUSH_ERROR=$(git push -u origin main 2>&1) || {
-              # Check if it's a non-fast-forward error
-              if echo "$PUSH_ERROR" | grep -q "non-fast-forward\|Updates were rejected"; then
-                echo "⚠️  Remote branch has new commits, pulling and merging..."
-                
-                # Fetch the latest remote branch
-                git fetch origin main || {
-                  echo "❌ Failed to fetch from origin/main"
-                  PUSH_RETRY=$((PUSH_RETRY + 1))
-                  if [ $PUSH_RETRY -ge $MAX_PUSH_RETRIES ]; then
-                    echo "❌ Failed after $MAX_PUSH_RETRIES attempts"
-                    echo "   Last error: $PUSH_ERROR"
-                    exit 1
-                  fi
-                  continue
-                }
-                
-                # Merge remote changes (allow unrelated histories if needed)
-                MERGE_OUTPUT=$(git merge origin/main --no-edit --allow-unrelated-histories 2>&1)
-                MERGE_EXIT_CODE=$?
-                
-                if [ $MERGE_EXIT_CODE -eq 0 ]; then
-                  echo "✅ Successfully merged remote changes"
-                  # Try push again without incrementing retry counter (since merge succeeded)
-                  continue
-                else
-                  echo "⚠️  Merge encountered issues, trying to resolve..."
-                  echo "   Merge output: $MERGE_OUTPUT"
-                  
-                  # Check if there are merge conflicts
-                  MERGE_CONFLICTS=$(git status --porcelain 2>/dev/null | grep -E "^UU|^AA|^DD|^DU" | wc -l || echo "0")
-                  if [ "$MERGE_CONFLICTS" -gt 0 ]; then
-                    echo "   Detected $MERGE_CONFLICTS conflicted files, resolving..."
-                    # Add all files (including resolved conflicts)
-                    git add . || true
-                    # Complete the merge
-                    git commit --no-edit 2>&1 || git commit -m "Merge remote changes with CLA submission" 2>&1 || {
-                      echo "⚠️  Warning: Could not complete merge commit, but continuing..."
-                    }
-                  elif git status --porcelain 2>/dev/null | grep -q "^M\|^A"; then
-                    # Files were modified/added but no conflicts, just commit
-                    echo "   No conflicts detected, completing merge..."
-                    git add . || true
-                    git commit --no-edit 2>&1 || git commit -m "Merge remote changes with CLA submission" 2>&1 || true
-                  fi
-                  
-                  # Try push again
-                  continue
-                fi
-              else
-                # Other error (network, permission, etc.)
-                PUSH_RETRY=$((PUSH_RETRY + 1))
-                if [ $PUSH_RETRY -lt $MAX_PUSH_RETRIES ]; then
-                  BACKOFF_DELAY=$((PUSH_RETRY * 2))
-                  echo "⚠️  Push failed (non-merge error), retrying in ${BACKOFF_DELAY} seconds..."
-                  echo "   Error: $PUSH_ERROR"
-                  sleep $BACKOFF_DELAY
-                  
-                  # Fetch latest before retry
-                  git fetch origin main 2>&1 || true
-                else
-                  echo "❌ Failed to push after $MAX_PUSH_RETRIES attempts"
-                  echo "   Last error: $PUSH_ERROR"
-                  echo "   This may be due to permission issues or network problems"
-                  echo "   Please check CLA_REPOSITORY_TOKEN permissions"
-                  exit 1
-                fi
-                continue
-              fi
-            }
-            # If we get here, push was successful
-            PUSH_SUCCESS=true
-            echo "✅ Successfully pushed to origin/main"
-          done
-          
-          if [ "$PUSH_SUCCESS" = true ]; then
-            echo "✅ Successfully transferred CLA file to DIPCNPO/CLA"
-          else
-            echo "❌ CLA file was created locally but push to remote failed"
-            exit 1
-          fi
-
-      - name: Update creations.tsv for root authors
-        if: steps.extract_cla.outputs.is_root_author == 'true'
-        run: |
-          cd creations-repo
-          
-          # Setup git
-          git config user.name "CLA Transfer Bot" || echo "⚠️  Warning: Failed to set user.name"
-          git config user.email "cla-transfer@DIPCNPO.org" || echo "⚠️  Warning: Failed to set user.email"
-          
-          # Ensure we're on main branch
-          CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-          if [ -z "$CURRENT_BRANCH" ] || [ "$CURRENT_BRANCH" != "main" ]; then
-            if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
-              git checkout --orphan main
-            elif git show-ref --verify --quiet refs/heads/main; then
-              git checkout main
-            else
-              if git rev-parse --verify HEAD >/dev/null 2>&1; then
-                git checkout -b main
-              else
-                git checkout --orphan main
-              fi
-            fi
-          fi
-          
-          # Extract project information
-          REPO_OWNER="${{ steps.extract_cla.outputs.repo_owner }}"
-          REPO_NAME="${{ steps.extract_cla.outputs.repo_name }}"
-          REPOSITORY="${REPO_OWNER}/${REPO_NAME}"
-          CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          PROJECT_NAME="${{ steps.extract_cla.outputs.project_name }}"
-          PROJECT_DESCRIPTION="${{ steps.extract_cla.outputs.repo_description }}"
-          PROJECT_LANGUAGE="${{ steps.extract_cla.outputs.project_language }}"
-          PROJECT_CATEGORY="${{ steps.extract_cla.outputs.project_category }}"
-          
-          # Read existing creations.tsv or create new one
-          TSV_FILE="creations.tsv"
-          if [ ! -f "$TSV_FILE" ]; then
-            echo "Creating new creations.tsv file"
-            # Create header
-            echo -e "repository\tcreatedAt\tname\tdescription\tlanguage\tcategory\tarticles\tauthors\treaders\tlikes\thates\tpass\tdaily_voting" > "$TSV_FILE"
-          else
-            # Check if header exists
-            if ! head -1 "$TSV_FILE" | grep -q "repository"; then
-              # Add header if missing
-              echo -e "repository\tcreatedAt\tname\tdescription\tlanguage\tcategory\tarticles\tauthors\treaders\tlikes\thates\tpass\tdaily_voting" > "${TSV_FILE}.new"
-              cat "$TSV_FILE" >> "${TSV_FILE}.new"
-              mv "${TSV_FILE}.new" "$TSV_FILE"
-            fi
-          fi
-          
-          # Check if repository already exists in TSV
-          if grep -q "^${REPOSITORY}\t" "$TSV_FILE"; then
-            echo "⚠️  Repository ${REPOSITORY} already exists in creations.tsv, skipping..."
-          else
-            # Add new entry (escape tabs in values)
-            PROJECT_NAME_ESCAPED=$(echo "$PROJECT_NAME" | sed 's/\t/ /g')
-            PROJECT_DESCRIPTION_ESCAPED=$(echo "$PROJECT_DESCRIPTION" | sed 's/\t/ /g')
-            PROJECT_LANGUAGE_ESCAPED=$(echo "$PROJECT_LANGUAGE" | sed 's/\t/ /g')
-            PROJECT_CATEGORY_ESCAPED=$(echo "$PROJECT_CATEGORY" | sed 's/\t/ /g')
-            
-            # Append new row
-            echo -e "${REPOSITORY}\t${CREATED_AT}\t${PROJECT_NAME_ESCAPED}\t${PROJECT_DESCRIPTION_ESCAPED}\t${PROJECT_LANGUAGE_ESCAPED}\t${PROJECT_CATEGORY_ESCAPED}\t0\t0\t0\t0\t0\t0\t0" >> "$TSV_FILE"
-            echo "✅ Added new entry to creations.tsv"
-          fi
-          
-          # Compress to creations.zip
-          if [ -f "creations.zip" ]; then
-            rm -f creations.zip
-          fi
-          zip -q creations.zip creations.tsv
-          
-          if [ ! -f "creations.zip" ]; then
-            echo "❌ Error: Failed to create creations.zip"
-            exit 1
-          fi
-          
-          echo "✅ Created creations.zip"
-          
-          # Add files to git
-          git add creations.tsv creations.zip || {
-            echo "❌ Error: Failed to add files to git"
-            git status
-            exit 1
-          }
-          
-          # Commit changes
-          if git diff --staged --quiet; then
-            echo "⚠️  Warning: No changes to commit"
-          else
-            git commit -m "Add project ${REPOSITORY} to creations.tsv
-
-          - Repository: ${REPOSITORY}
-          - Name: ${PROJECT_NAME}
-          - Issue: #${{ github.event.issue.number }}" || {
-              echo "❌ Error: Failed to commit changes"
-              git status
-              exit 1
-            }
-            echo "✅ Successfully committed changes"
-          fi
-          
-          # Push to main branch
-          MAX_PUSH_RETRIES=5
-          PUSH_RETRY=0
-          PUSH_SUCCESS=false
-          
-          while [ $PUSH_RETRY -lt $MAX_PUSH_RETRIES ] && [ "$PUSH_SUCCESS" = false ]; do
-            echo "Attempting to push (attempt $((PUSH_RETRY + 1))/$MAX_PUSH_RETRIES)..."
-            PUSH_ERROR=$(git push -u origin main 2>&1) || {
-              if echo "$PUSH_ERROR" | grep -q "non-fast-forward\|Updates were rejected"; then
-                echo "⚠️  Remote branch has new commits, pulling and merging..."
-                git fetch origin main || {
-                  PUSH_RETRY=$((PUSH_RETRY + 1))
-                  if [ $PUSH_RETRY -ge $MAX_PUSH_RETRIES ]; then
-                    echo "❌ Failed after $MAX_PUSH_RETRIES attempts"
-                    exit 1
-                  fi
-                  continue
-                }
-                git merge origin/main --no-edit --allow-unrelated-histories 2>&1 || {
-                  git add . || true
-                  git commit --no-edit 2>&1 || git commit -m "Merge remote changes" 2>&1 || true
-                }
-                continue
-              else
-                PUSH_RETRY=$((PUSH_RETRY + 1))
-                if [ $PUSH_RETRY -lt $MAX_PUSH_RETRIES ]; then
-                  BACKOFF_DELAY=$((PUSH_RETRY * 2))
-                  echo "⚠️  Push failed, retrying in ${BACKOFF_DELAY} seconds..."
-                  sleep $BACKOFF_DELAY
-                  git fetch origin main 2>&1 || true
-                else
-                  echo "❌ Failed to push after $MAX_PUSH_RETRIES attempts"
-                  exit 1
-                fi
-                continue
-              fi
-            }
-            PUSH_SUCCESS=true
-            echo "✅ Successfully pushed to origin/main"
-          done
-          
-          if [ "$PUSH_SUCCESS" = true ]; then
-            echo "✅ Successfully updated creations.tsv in DIPCNPO/creations"
-          else
-            echo "❌ Failed to push changes to creations repository"
-            exit 1
-          fi
-
-      - name: Invite root author to DIPCNPO
-        if: steps.extract_cla.outputs.is_root_author == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.CLA_REPOSITORY_TOKEN }}
-          script: |
-            const username = '${{ steps.extract_cla.outputs.username }}';
-            const org = 'DIPCNPO';
-            
-            try {
-              console.log(`📧 Inviting ${username} to join ${org}...`);
-              
-              // First, get user information to obtain user ID
-              let userId;
-              try {
-                const userResponse = await github.rest.users.getByUsername({
-                  username: username
-                });
-                userId = userResponse.data.id;
-                console.log(`✅ Found user ID: ${userId} for username: ${username}`);
-              } catch (userError) {
-                console.error(`❌ Failed to get user information: ${userError.message}`);
-                console.log(`ℹ️  Please manually invite ${username} to ${org} organization`);
-                return;
-              }
-              
-              // Invite user to organization using user ID
-              try {
-                await github.rest.orgs.createInvitation({
-                  org: org,
-                  invitee_id: userId,
-                  role: 'direct_member'
-                });
-                console.log(`✅ Successfully sent invitation to ${username} (ID: ${userId})`);
-              } catch (inviteError) {
-                console.error(`⚠️  Failed to send invitation: ${inviteError.message}`);
-                if (inviteError.status === 404) {
-                  console.error(`   Organization ${org} not found or token lacks permissions`);
-                } else if (inviteError.status === 422) {
-                  console.error(`   User may already be a member or have a pending invitation`);
-                }
-                console.log(`ℹ️  Please manually invite ${username} to ${org} organization if needed`);
-              }
-            } catch (error) {
-              console.error(`❌ Failed to invite user: ${error.message}`);
-              console.error(`   Please manually invite ${username} to ${org} organization`);
-              // Don't fail the workflow for invitation errors
+          // 提取仓库信息（从 **repository:** JSON）
+          function extractRepoInfo(body) {
+            const repoMatch = body.match(/\*\*repository[：:]\*\*\s*(.+)/);
+            if (!repoMatch || !repoMatch[1]) {
+              return null;
             }
 
-      - name: Update Projects.json in Projects repository
-        id: update_projects
-        continue-on-error: false
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.CLA_REPOSITORY_TOKEN }}
-          script: |
-            // Always update Projects.json in DIPCF/Projects
-            const projectsOwner = 'DIPCF';
-            const projectsRepo = 'Projects';
-            const targetOwner = '${{ steps.extract_cla.outputs.repo_owner }}';
-            const targetRepo = '${{ steps.extract_cla.outputs.repo_name }}';
+            let repoJson = repoMatch[1].trim();
+            // 移除可能的引号
+            if ((repoJson.startsWith('"') && repoJson.endsWith('"')) ||
+                (repoJson.startsWith("'") && repoJson.endsWith("'"))) {
+              repoJson = repoJson.slice(1, -1);
+            }
+
+            if (!repoJson || repoJson === 'null' || repoJson === '') {
+              return null;
+            }
 
             try {
-              console.log(`📋 Updating Projects.json in ${projectsOwner}/${projectsRepo}`);
-              console.log(`🎯 Adding repository entry: ${targetOwner}/${targetRepo}`);
-              
-              // Verify token is available (in github-script, token is automatically available via github)
-              console.log(`🔑 Using GitHub token for authentication`);
-              
-              // Extract repository description from step output
-              const targetDescription = '${{ steps.extract_cla.outputs.repo_description }}' || '';
-              
-              // Simply construct the repository entry from extracted info
-              // No need to verify repository exists - just add the URL
-            const entry = {
-                repository: `https://github.com/${targetOwner}/${targetRepo}`,
-                description: targetDescription,
-                createdAt: new Date().toISOString()
+              const repoInfo = JSON.parse(repoJson);
+              return {
+                owner: repoInfo.owner || '',
+                repo: repoInfo.repo || '',
+                name: repoInfo.name || '',
+                description: repoInfo.description || '',
+                language: repoInfo.language || '',
+                category: repoInfo.category || '',
+                repository: repoInfo.repository || ''
               };
-              
-              console.log(`📝 Entry to add:`, JSON.stringify(entry, null, 2));
-
-            const path = 'Projects.json';
-            let contentArray = [];
-            let sha = undefined;
-              
-              // Always use 'main' branch for DIPCF/Projects
-              const branch = 'main';
-              
-              // Read existing Projects.json from main branch
-              // If file doesn't exist (404), we'll create it
-              try {
-                const file = await github.rest.repos.getContent({ 
-                  owner: projectsOwner, 
-                  repo: projectsRepo, 
-                  path,
-                  ref: branch
-                });
-              const decoded = Buffer.from(file.data.content, 'base64').toString();
-              contentArray = JSON.parse(decoded);
-              sha = file.data.sha;
-                console.log(`📖 Read existing Projects.json with ${contentArray.length} entries`);
             } catch (e) {
-                if (e.status === 404) {
-                  console.log('📄 Projects.json does not exist, will create new file');
-                  contentArray = [];
-                  sha = undefined;
-                } else {
-                  console.error(`❌ Error reading Projects.json: ${e.message}`);
-                  console.error(`   Status: ${e.status}`);
-                  console.error(`   This might be a permission issue`);
-                  // For non-404 errors, try to continue anyway (file might be inaccessible but we can try to create)
-              contentArray = [];
-                  sha = undefined;
-                }
-              }
+              console.warn('Failed to parse repository JSON:', e.message);
+              return null;
+            }
+          }
 
-              // Check if entry already exists to avoid duplicates
-              const exists = contentArray.some(item => item.repository === entry.repository);
-              if (!exists) {
-                console.log(`📝 Adding new entry to Projects.json on ${branch} branch`);
-                
-                // Retry mechanism for concurrent writes
-                const maxRetries = 5;
-                let retryCount = 0;
-                let success = false;
-                let currentSha = sha;
-                let currentContentArray = [...contentArray];
-                
-                while (retryCount < maxRetries && !success) {
-                  try {
-                    // Add entry if not exists
-                    const newArray = [...currentContentArray];
-                    if (!newArray.some(item => item.repository === entry.repository)) {
-                      newArray.push(entry);
-                    }
-                    
-                    const newContent = Buffer.from(JSON.stringify(newArray, null, 2)).toString('base64');
+          // 生成 CLA 文件名
+          function generateClaFilename(username) {
+            const now = new Date();
+            const timestamp = now.toISOString().replace(/[:.]/g, '-').replace('T', 'T').split('.')[0] + '-000Z';
+            return `${username}_${timestamp}.md`;
+          }
 
-                    console.log(`📤 Attempting to write Projects.json to ${projectsOwner}/${projectsRepo} on ${branch} branch`);
-                    console.log(`   Content size: ${newContent.length} bytes`);
-                    console.log(`   SHA: ${currentSha || 'undefined (new file)'}`);
-                    
-                    const result = await github.rest.repos.createOrUpdateFileContents({
-              owner: projectsOwner,
-              repo: projectsRepo,
-              path,
-              message: `chore: add project ${targetOwner}/${targetRepo} to Projects.json`,
-              content: newContent,
-                      branch: branch,
-                      sha: currentSha || undefined
-                    });
-                    
-                    console.log(`✅ Successfully added ${targetOwner}/${targetRepo} to Projects.json (attempt ${retryCount + 1})`);
-                    console.log(`   Commit SHA: ${result.data.commit.sha}`);
-                    console.log(`   File URL: ${result.data.content.html_url}`);
-                    success = true;
-                  } catch (error) {
-                    if (error.status === 409 && retryCount < maxRetries - 1) {
-                      // Conflict - file was modified by another process
-                      retryCount++;
-                      const backoffDelay = Math.min(1000 * Math.pow(2, retryCount - 1), 10000); // Exponential backoff, max 10s
-                      console.log(`⚠️  Conflict detected (409), retrying in ${backoffDelay}ms (attempt ${retryCount + 1}/${maxRetries})...`);
-                      
-                      // Wait before retry
-                      await new Promise(resolve => setTimeout(resolve, backoffDelay));
-                      
-                      // Re-read the file to get latest version
-                      try {
-                        const file = await github.rest.repos.getContent({
-                          owner: projectsOwner,
-                          repo: projectsRepo,
-                          path,
-                          ref: branch
-                        });
-                        const decoded = Buffer.from(file.data.content, 'base64').toString();
-                        currentContentArray = JSON.parse(decoded);
-                        currentSha = file.data.sha;
-                        console.log(`📖 Re-read Projects.json, now has ${currentContentArray.length} entries`);
-                      } catch (e) {
-                        if (e.status === 404) {
-                          // File was deleted or doesn't exist, start fresh
-                          console.log(`⚠️  File not found during retry, creating new file`);
-                          currentContentArray = [];
-                          currentSha = undefined;
-                        } else {
-                          console.error(`❌ Failed to re-read file: ${e.message}`);
-                          throw e;
-                        }
-                      }
-                    } else {
-                      // Not a conflict or max retries reached
-                      throw error;
-                    }
-                  }
-                }
-                
-                if (!success) {
-                  throw new Error(`Failed to update Projects.json after ${maxRetries} attempts`);
-                }
-                
-                core.setOutput('needMerge', 'false');
-              } else {
-                console.log(`ℹ️  Project ${targetOwner}/${targetRepo} already exists in Projects.json`);
-                core.setOutput('needMerge', 'false');
+          // 读取或创建文件
+          async function getFileContent(octokit, owner, repo, filePath, branch = 'main') {
+            try {
+              const { data } = await octokit.rest.repos.getContent({
+                owner,
+                repo,
+                path: filePath,
+                ref: branch
+              });
+
+              if (data.type === 'file' && data.encoding === 'base64') {
+                const content = Buffer.from(data.content, 'base64').toString('utf8');
+                return {
+                  content,
+                  sha: data.sha,
+                  exists: true
+                };
               }
             } catch (error) {
-              console.error(`❌ Failed to update Projects.json: ${error.message}`);
-              console.error(`   Status: ${error.status}`);
-              console.error(`   Target repository: ${targetOwner}/${targetRepo}`);
-              console.error(`   Target file location: ${projectsOwner}/${projectsRepo}/Projects.json`);
-              console.error(`   Error details:`, JSON.stringify(error.response?.data || error, null, 2));
-              
               if (error.status === 404) {
-                console.error(`   ⚠️  404 Error - Repository ${projectsOwner}/${projectsRepo} not found or not accessible`);
-                console.error(`   Please check if the repository exists and CLA_REPOSITORY_TOKEN has access`);
-              } else if (error.status === 403) {
-                console.error(`   ⚠️  403 Error - Permission denied`);
-                console.error(`   CLA_REPOSITORY_TOKEN may not have write access to ${projectsOwner}/${projectsRepo}`);
-                console.error(`   Please check repository permissions and token scopes`);
-              } else if (error.status === 422) {
-                console.error(`   ⚠️  422 Error - Validation failed`);
-                console.error(`   This might be due to invalid file path or branch name`);
-              } else {
-                console.error(`   ⚠️  Unexpected error occurred`);
+                return {
+                  content: null,
+                  sha: null,
+                  exists: false
+                };
               }
-              
-              // For permission and access errors, throw to make them visible
-              // For other errors (like repo not found), we can allow workflow to continue
-              if (error.status === 403 || error.status === 404) {
-                // These are critical - throw to show the error
-                throw error;
-              } else {
-                // For other errors, log but don't throw
-                core.setOutput('needMerge', 'false');
-                console.error(`⚠️  Non-critical error - workflow will continue`);
-              }
+              throw error;
             }
-      
-      - name: Add success comment to original issue
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const isRootAuthor = '${{ steps.extract_cla.outputs.is_root_author }}' === 'true';
-            const rootAuthorSection = isRootAuthor ? `
+            return {
+              content: null,
+              sha: null,
+              exists: false
+            };
+          }
+
+          // 创建或更新文件
+          async function createOrUpdateFile(octokit, owner, repo, filePath, content, message, sha = null, branch = 'main') {
+            const contentBase64 = Buffer.from(content).toString('base64');
+            
+            return await octokit.rest.repos.createOrUpdateFileContents({
+              owner,
+              repo,
+              path: filePath,
+              message,
+              content: contentBase64,
+              sha: sha || undefined,
+              branch,
+              committer: {
+                name: 'CLA Transfer Bot',
+                email: 'cla-transfer@DIPCNPO.org'
+              }
+            });
+          }
+
+          // 主处理流程
+          async function main() {
+            try {
+              // 提取信息
+              const username = extractUsername(issueTitle);
+              console.log(`Extracted username: ${username}`);
+
+              const repoInfo = extractRepoInfo(issueBody);
+              const isRootAuthor = repoInfo && repoInfo.name ? true : false;
+              
+              const repoOwner = repoInfo?.owner || 'DIPCNPO';
+              const repoName = repoInfo?.repo || 'creations';
+              const repository = repoInfo?.repository || `${repoOwner}/${repoName}`;
+
+              console.log(`Repository: ${repository}`);
+              console.log(`Is root author: ${isRootAuthor}`);
+
+              // 生成文件名
+              const claFilename = generateClaFilename(username);
+              console.log(`CLA filename: ${claFilename}`);
+
+              // 1. 创建 CLA 文件到 DIPCNPO/CLA 仓库
+              console.log('Creating CLA file in DIPCNPO/CLA...');
+              await createOrUpdateFile(
+                claOctokit,
+                'DIPCNPO',
+                'CLA',
+                claFilename,
+                issueBody,
+                `Add CLA file from ${repoOwner}/${repoName} Issue #${issueNumber}\n\n- User: ${username}\n- File: ${claFilename}\n- Issue: #${issueNumber}`
+              );
+              console.log('✅ CLA file created');
+
+              // 2. 如果是根作者，更新 creations.tsv
+              if (isRootAuthor) {
+                console.log('Processing root author - updating creations.tsv...');
+                
+                // 读取现有的 creations.tsv
+                const creationsFile = await getFileContent(claOctokit, 'DIPCNPO', 'creations', 'creations.tsv');
+                
+                let tsvContent = '';
+                let tsvSha = null;
+                
+                if (creationsFile.exists) {
+                  tsvContent = creationsFile.content;
+                  tsvSha = creationsFile.sha;
+                } else {
+                  // 创建新的 TSV 文件，包含表头
+                  tsvContent = 'repository\tcreatedAt\tname\tdescription\tlanguage\tcategory\tarticles\tauthors\treaders\tlikes\thates\tpass\tdaily_voting\n';
+                }
+
+                // 检查是否已存在
+                const repositoryLine = tsvContent.split('\n').find(line => line.startsWith(`${repository}\t`));
+                if (repositoryLine) {
+                  console.log(`⚠️  Repository ${repository} already exists in creations.tsv, skipping...`);
+                } else {
+                  // 添加新行
+                  const createdAt = new Date().toISOString();
+                  const name = (repoInfo.name || '').replace(/\t/g, ' ');
+                  const description = (repoInfo.description || '').replace(/\t/g, ' ');
+                  const language = (repoInfo.language || '').replace(/\t/g, ' ');
+                  const category = (repoInfo.category || '').replace(/\t/g, ' ');
+                  
+                  const newRow = `${repository}\t${createdAt}\t${name}\t${description}\t${language}\t${category}\t0\t0\t0\t0\t0\t0\t0\n`;
+                  tsvContent += newRow;
+                  
+                  // 保存 TSV 文件
+                  await createOrUpdateFile(
+                    claOctokit,
+                    'DIPCNPO',
+                    'creations',
+                    'creations.tsv',
+                    tsvContent,
+                    `Add project ${repository} to creations.tsv\n\n- Repository: ${repository}\n- Name: ${name}\n- Issue: #${issueNumber}`,
+                    tsvSha
+                  );
+                  console.log('✅ creations.tsv updated');
+
+                  // 压缩为 creations.zip
+                  // 将 TSV 内容写入临时文件
+                  const tempTsvPath = '/tmp/creations.tsv';
+                  fs.writeFileSync(tempTsvPath, tsvContent, 'utf8');
+                  
+                  // 压缩
+                  const zipPath = '/tmp/creations.zip';
+                  if (fs.existsSync(zipPath)) {
+                    fs.unlinkSync(zipPath);
+                  }
+                  execSync(`zip -q ${zipPath} ${tempTsvPath}`, { stdio: 'inherit' });
+                  
+                  // 读取 zip 文件并上传
+                  const zipContent = fs.readFileSync(zipPath);
+                  const zipBase64 = zipContent.toString('base64');
+                  
+                  // 检查 zip 文件是否已存在
+                  const zipFile = await getFileContent(claOctokit, 'DIPCNPO', 'creations', 'creations.zip');
+                  
+                  await claOctokit.rest.repos.createOrUpdateFileContents({
+                    owner: 'DIPCNPO',
+                    repo: 'creations',
+                    path: 'creations.zip',
+                    message: 'Update voting data (compressed)',
+                    content: zipBase64,
+                    sha: zipFile.exists ? zipFile.sha : null,
+                    committer: {
+                      name: 'CLA Transfer Bot',
+                      email: 'cla-transfer@DIPCNPO.org'
+                    }
+                  });
+                  
+                  console.log('✅ creations.zip updated');
+                  
+                  // 清理临时文件
+                  fs.unlinkSync(tempTsvPath);
+                  fs.unlinkSync(zipPath);
+                }
+              }
+
+              // 3. 邀请根作者加入 DIPCNPO
+              if (isRootAuthor) {
+                console.log(`Inviting ${username} to join DIPCNPO...`);
+                try {
+                  // 获取用户信息
+                  const { data: userData } = await claOctokit.rest.users.getByUsername({
+                    username: username
+                  });
+                  
+                  // 发送邀请
+                  await claOctokit.rest.orgs.createInvitation({
+                    org: 'DIPCNPO',
+                    invitee_id: userData.id,
+                    role: 'direct_member'
+                  });
+                  
+                  console.log(`✅ Invitation sent to ${username}`);
+                } catch (error) {
+                  console.warn(`⚠️  Failed to invite user: ${error.message}`);
+                  if (error.status === 404) {
+                    console.warn(`   Organization DIPCNPO not found or token lacks permissions`);
+                  } else if (error.status === 422) {
+                    console.warn(`   User may already be a member or have a pending invitation`);
+                  }
+                  console.warn(`   Please manually invite ${username} to DIPCNPO organization if needed`);
+                }
+              }
+
+              // 4. 更新 Projects.json（可选，保留原有逻辑）
+              try {
+                const projectsFile = await getFileContent(claOctokit, 'DIPCF', 'Projects', 'Projects.json');
+                
+                let projectsArray = [];
+                let projectsSha = null;
+                
+                if (projectsFile.exists) {
+                  projectsArray = JSON.parse(projectsFile.content);
+                  projectsSha = projectsFile.sha;
+                }
+                
+                const entry = {
+                  repository: `https://github.com/${repository}`,
+                  description: repoInfo?.description || '',
+                  createdAt: new Date().toISOString()
+                };
+                
+                // 检查是否已存在
+                const exists = projectsArray.some(item => item.repository === entry.repository);
+                if (!exists) {
+                  projectsArray.push(entry);
+                  
+                  await createOrUpdateFile(
+                    claOctokit,
+                    'DIPCF',
+                    'Projects',
+                    'Projects.json',
+                    JSON.stringify(projectsArray, null, 2),
+                    `chore: add project ${repository} to Projects.json`,
+                    projectsSha
+                  );
+                  console.log('✅ Projects.json updated');
+                } else {
+                  console.log(`ℹ️  Project ${repository} already exists in Projects.json`);
+                }
+              } catch (error) {
+                console.warn(`⚠️  Failed to update Projects.json: ${error.message}`);
+                // 不阻止工作流继续
+              }
+
+              // 5. 添加成功评论
+              const rootAuthorSection = isRootAuthor ? `
               **Root Author Processing:**
               - ✅ Project information added to creations.tsv
               - ✅ creations.zip updated
               - ✅ Invitation sent to join DIPCNPO organization
               ` : '';
-            
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `✅ **CLA Processing Complete**
+
+              await githubOctokit.rest.issues.createComment({
+                owner: repoOwner,
+                repo: repoName,
+                issue_number: issueNumber,
+                body: `✅ **CLA Processing Complete**
 
               **Processing Results:**
               - ✅ CLA file created and transferred to DIPCNPO/CLA repository
               
               **File Information:**
-              - Filename: \`${{ steps.extract_cla.outputs.cla_filename }}\`
+              - Filename: \`${claFilename}\`
               - Location: \`DIPCNPO/CLA/\` (root directory)
-              - User: ${{ steps.extract_cla.outputs.username }}
+              - User: ${username}
               ${rootAuthorSection}
               
               **Status:** Processing Complete ✅`
-            });
-            
-            // Add success labels
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: ['cla-processed', 'success']
-            });
-            
-            // Close issue
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              state: 'closed'
-            });
-      
+              });
+
+              // 添加标签
+              await githubOctokit.rest.issues.addLabels({
+                owner: repoOwner,
+                repo: repoName,
+                issue_number: issueNumber,
+                labels: ['cla-processed', 'success']
+              });
+
+              // 关闭 issue
+              await githubOctokit.rest.issues.update({
+                owner: repoOwner,
+                repo: repoName,
+                issue_number: issueNumber,
+                state: 'closed'
+              });
+
+              console.log('✅ All processing complete');
+            } catch (error) {
+              console.error('❌ Error processing CLA submission:', error);
+              process.exit(1);
+            }
+          }
+
+          main();
+          EOF
+
       - name: Create summary
         run: |
           echo "## CLA Submission and Transfer Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📝 **Source Issue:** #${{ github.event.issue.number }}" >> $GITHUB_STEP_SUMMARY
-          echo "👤 **User:** ${{ steps.extract_cla.outputs.username }}" >> $GITHUB_STEP_SUMMARY
-          echo "📁 **CLA File:** ${{ steps.extract_cla.outputs.cla_filename }}" >> $GITHUB_STEP_SUMMARY
+          echo "👤 **User:** Extracted from issue title" >> $GITHUB_STEP_SUMMARY
+          echo "📁 **CLA File:** Created in DIPCNPO/CLA/" >> $GITHUB_STEP_SUMMARY
           echo "🏢 **Target:** DIPCNPO/CLA/ (root directory)" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.extract_cla.outputs.is_root_author }}" == "true" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "🌱 **Root Author Processing:**" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Project added to creations.tsv" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ creations.zip updated" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Invitation sent to DIPCNPO" >> $GITHUB_STEP_SUMMARY
-          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "✅ **Status:** Successfully processed CLA submission" >> $GITHUB_STEP_SUMMARY
