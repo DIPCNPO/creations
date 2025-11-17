@@ -49,8 +49,9 @@ jobs:
           const issueTitle = process.env.ISSUE_TITLE;
           const issueBody = process.env.ISSUE_BODY;
           const issueNumber = parseInt(process.env.ISSUE_NUMBER);
-          const repoOwner = process.env.REPO_OWNER;
-          const repoName = process.env.REPO_NAME;
+          // 工作流触发的仓库（DIPCNPO/creations）
+          const workflowRepoOwner = process.env.REPO_OWNER;
+          const workflowRepoName = process.env.REPO_NAME;
 
           // 初始化 Octokit 客户端
           const claOctokit = new Octokit({ auth: claToken });
@@ -171,11 +172,13 @@ jobs:
               const repoInfo = extractRepoInfo(issueBody);
               const isRootAuthor = repoInfo && repoInfo.name ? true : false;
               
-              const repoOwner = repoInfo?.owner || 'DIPCNPO';
-              const repoName = repoInfo?.repo || 'creations';
-              const repository = repoInfo?.repository || `${repoOwner}/${repoName}`;
+              // 从 issue body 提取的项目仓库信息
+              const projectRepoOwner = repoInfo?.owner || 'DIPCNPO';
+              const projectRepoName = repoInfo?.repo || 'creations';
+              const repository = repoInfo?.repository || `${projectRepoOwner}/${projectRepoName}`;
 
-              console.log(`Repository: ${repository}`);
+              console.log(`Project Repository: ${repository}`);
+              console.log(`Workflow Repository: ${workflowRepoOwner}/${workflowRepoName}`);
               console.log(`Is root author: ${isRootAuthor}`);
 
               // 生成文件名
@@ -190,7 +193,7 @@ jobs:
                 'CLA',
                 claFilename,
                 issueBody,
-                `Add CLA file from ${repoOwner}/${repoName} Issue #${issueNumber}\n\n- User: ${username}\n- File: ${claFilename}\n- Issue: #${issueNumber}`
+                `Add CLA file from ${workflowRepoOwner}/${workflowRepoName} Issue #${issueNumber}\n\n- User: ${username}\n- File: ${claFilename}\n- Issue: #${issueNumber}`
               );
               console.log('✅ CLA file created');
 
@@ -356,9 +359,10 @@ jobs:
               - ✅ Invitation sent to join DIPCNPO organization
               ` : '';
 
+              // 添加评论到触发工作流的仓库（DIPCNPO/creations）的 issue
               await githubOctokit.rest.issues.createComment({
-                owner: repoOwner,
-                repo: repoName,
+                owner: workflowRepoOwner,
+                repo: workflowRepoName,
                 issue_number: issueNumber,
                 body: `✅ **CLA Processing Complete**
 
@@ -376,16 +380,16 @@ jobs:
 
               // 添加标签
               await githubOctokit.rest.issues.addLabels({
-                owner: repoOwner,
-                repo: repoName,
+                owner: workflowRepoOwner,
+                repo: workflowRepoName,
                 issue_number: issueNumber,
                 labels: ['cla-processed', 'success']
               });
 
               // 关闭 issue
               await githubOctokit.rest.issues.update({
-                owner: repoOwner,
-                repo: repoName,
+                owner: workflowRepoOwner,
+                repo: workflowRepoName,
                 issue_number: issueNumber,
                 state: 'closed'
               });
