@@ -240,7 +240,7 @@ jobs:
                   const language = (repoInfo.language || '').replace(/\t/g, ' ');
                   const category = (repoInfo.category || '').replace(/\t/g, ' ');
                   
-                  const newRow = `${repository}\t${createdAt}\t${name}\t${description}\t${language}\t${category}\t0\t0\t0\t0\t0\t0\t0\n`;
+                  const newRow = `${repository}\t${createdAt}\t${name}\t${description}\t${language}\t${category}\t1\t1\t0\t0\t0\t0\t0\n`;
                   tsvContent += newRow;
                   
                   // 保存 TSV 文件
