@@ -12,6 +12,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      organization: write
     steps:
       - name: Checkout Projects repository
         uses: actions/checkout@v4
@@ -172,6 +173,10 @@ jobs:
               const repoInfo = extractRepoInfo(issueBody);
               const isRootAuthor = repoInfo && repoInfo.name ? true : false;
               
+              console.log(`=== Root Author Check ===`);
+              console.log(`Repo Info:`, repoInfo);
+              console.log(`Is Root Author:`, isRootAuthor);
+              
               // 从 issue body 提取的项目仓库信息
               const projectRepoOwner = repoInfo?.owner || 'DIPCNPO';
               const projectRepoName = repoInfo?.repo || 'creations';
@@ -300,22 +305,53 @@ jobs:
                     username: username
                   });
                   
-                  // 发送邀请
-                  await claOctokit.rest.orgs.createInvitation({
-                    org: 'DIPCNPO',
-                    invitee_id: userData.id,
-                    role: 'direct_member'
+                  console.log(`User data:`, {
+                    id: userData.id,
+                    login: userData.login,
+                    email: userData.email
                   });
                   
-                  console.log(`✅ Invitation sent to ${username}`);
+                  // 构建邀请参数
+                  // GitHub API 要求只能使用 invitee_id 或 email 中的一个，不能同时使用
+                  const invitationParams = {
+                    org: 'DIPCNPO',
+                    role: 'member'  // 普通成员
+                  };
+                  
+                  // 优先使用 invitee_id（用户 ID）
+                  if (userData.id) {
+                    invitationParams.invitee_id = userData.id;
+                  } else if (userData.email) {
+                    // 如果没有 ID，使用 email
+                    invitationParams.email = userData.email;
+                  } else {
+                    throw new Error(`Cannot invite user: no ID or email available for ${username}`);
+                  }
+                  
+                  console.log(`Invitation params:`, invitationParams);
+                  
+                  // 发送邀请
+                  const invitationResult = await claOctokit.rest.orgs.createInvitation(invitationParams);
+                  
+                  console.log(`✅ Invitation sent to ${username}`, invitationResult.data);
                 } catch (error) {
-                  console.warn(`⚠️  Failed to invite user: ${error.message}`);
+                  console.error(`❌ Failed to invite user:`, error);
+                  console.warn(`⚠️  Error details:`, {
+                    status: error.status,
+                    message: error.message,
+                    response: error.response?.data
+                  });
+                  
                   if (error.status === 404) {
                     console.warn(`   Organization DIPCNPO not found or token lacks permissions`);
                   } else if (error.status === 422) {
                     console.warn(`   User may already be a member or have a pending invitation`);
+                    // 422 错误可能意味着用户已经是成员或有待处理的邀请，这不算错误
+                  } else if (error.status === 403) {
+                    console.warn(`   Token lacks organization:write permission`);
+                  } else {
+                    console.warn(`   Please manually invite ${username} to DIPCNPO organization if needed`);
                   }
-                  console.warn(`   Please manually invite ${username} to DIPCNPO organization if needed`);
                 }
               }
 
