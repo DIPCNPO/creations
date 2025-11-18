@@ -12,7 +12,6 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      organization: write
     steps:
       - name: Checkout Projects repository
         uses: actions/checkout@v4
