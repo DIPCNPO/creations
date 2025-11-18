@@ -334,7 +334,6 @@ jobs:
                   
                   console.log(`✅ Invitation sent to ${username}`, invitationResult.data);
                 } catch (error) {
-                  console.error(`❌ Failed to invite user:`, error);
                   console.warn(`⚠️  Error details:`, {
                     status: error.status,
                     message: error.message,
@@ -353,82 +352,6 @@ jobs:
                   }
                 }
               }
-
-              // 4. 更新 Projects.json（可选，保留原有逻辑）
-              try {
-                const projectsFile = await getFileContent(claOctokit, 'DIPCF', 'Projects', 'Projects.json');
-                
-                let projectsArray = [];
-                let projectsSha = null;
-                
-                if (projectsFile.exists) {
-                  projectsArray = JSON.parse(projectsFile.content);
-                  projectsSha = projectsFile.sha;
-                }
-                
-                const entry = {
-                  repository: `https://github.com/${repository}`,
-                  description: repoInfo?.description || '',
-                  createdAt: new Date().toISOString()
-                };
-                
-                // 检查是否已存在
-                const exists = projectsArray.some(item => item.repository === entry.repository);
-                if (!exists) {
-                  projectsArray.push(entry);
-                  
-                  await createOrUpdateFile(
-                    claOctokit,
-                    'DIPCF',
-                    'Projects',
-                    'Projects.json',
-                    JSON.stringify(projectsArray, null, 2),
-                    `chore: add project ${repository} to Projects.json`,
-                    projectsSha
-                  );
-                  console.log('✅ Projects.json updated');
-                } else {
-                  console.log(`ℹ️  Project ${repository} already exists in Projects.json`);
-                }
-              } catch (error) {
-                console.warn(`⚠️  Failed to update Projects.json: ${error.message}`);
-                // 不阻止工作流继续
-              }
-
-              // 5. 添加成功评论
-              const rootAuthorSection = isRootAuthor ? `
-              **Root Author Processing:**
-              - ✅ Project information added to creations.tsv
-              - ✅ creations.zip updated
-              - ✅ Invitation sent to join DIPCNPO organization
-              ` : '';
-
-              // 添加评论到触发工作流的仓库（DIPCNPO/creations）的 issue
-              await githubOctokit.rest.issues.createComment({
-                owner: workflowRepoOwner,
-                repo: workflowRepoName,
-                issue_number: issueNumber,
-                body: `✅ **CLA Processing Complete**
-
-              **Processing Results:**
-              - ✅ CLA file created and transferred to DIPCNPO/CLA repository
-              
-              **File Information:**
-              - Filename: \`${claFilename}\`
-              - Location: \`DIPCNPO/CLA/\` (root directory)
-              - User: ${username}
-              ${rootAuthorSection}
-              
-              **Status:** Processing Complete ✅`
-              });
-
-              // 添加标签
-              await githubOctokit.rest.issues.addLabels({
-                owner: workflowRepoOwner,
-                repo: workflowRepoName,
-                issue_number: issueNumber,
-                labels: ['cla-processed', 'success']
-              });
 
               // 关闭 issue
               await githubOctokit.rest.issues.update({
