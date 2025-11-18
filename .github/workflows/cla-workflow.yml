@@ -314,7 +314,7 @@ jobs:
                   // GitHub API 要求只能使用 invitee_id 或 email 中的一个，不能同时使用
                   const invitationParams = {
                     org: 'DIPCNPO',
-                    role: 'member'  // 普通成员
+                    role: 'direct_member'
                   };
                   
                   // 优先使用 invitee_id（用户 ID）
