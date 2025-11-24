@@ -10,7 +10,7 @@ jobs:
   process-statistics:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       issues: read
     steps:
       - name: Checkout repository
@@ -160,6 +160,22 @@ jobs:
             return null;
           }
 
+          // 检查仓库是否存在
+          async function repositoryExists(owner, repo) {
+            try {
+              await octokit.rest.repos.get({
+                owner,
+                repo
+              });
+              return true;
+            } catch (error) {
+              if (error.status === 404) {
+                return false;
+              }
+              throw error;
+            }
+          }
+
           // 获取仓库的 .voting.json
           async function getVotingJson(repository) {
             const repoInfo = parseRepository(repository);
@@ -259,10 +275,12 @@ jobs:
               const updatedRows = [];
               let processedCount = 0;
               let errorCount = 0;
+              let removedCount = 0;
 
               for (const row of rows) {
                 const repository = row.repository;
                 if (!repository) {
+                  // 如果没有仓库信息，保留该行
                   updatedRows.push(row);
                   continue;
                 }
@@ -270,8 +288,30 @@ jobs:
                 console.log(`Processing ${repository}...`);
 
                 try {
+                  // 检查仓库是否存在
+                  const repoInfo = parseRepository(repository);
+                  if (!repoInfo) {
+                    console.warn(`Invalid repository format: ${repository}, removing from TSV`);
+                    removedCount++;
+                    continue;
+                  }
+
+                  const repoExists = await repositoryExists(repoInfo.owner, repoInfo.repo);
+                  if (!repoExists) {
+                    console.warn(`Repository ${repository} not found, removing from TSV`);
+                    removedCount++;
+                    continue;
+                  }
+
                   // 获取 .voting.json
                   const votingData = await getVotingJson(repository);
+                  
+                  // 如果找不到 .voting.json，删除该条目
+                  if (votingData === null) {
+                    console.warn(`.voting.json not found for ${repository}, removing from TSV`);
+                    removedCount++;
+                    continue;
+                  }
                   
                   // 统计数据
                   const stats = calculateStatistics(votingData);
@@ -295,13 +335,14 @@ jobs:
                   await new Promise(resolve => setTimeout(resolve, 200));
                 } catch (error) {
                   console.error(`Error processing ${repository}: ${error.message}`);
-                  // 保留原始数据
-                  updatedRows.push(row);
+                  // 如果处理出错，也删除该条目
+                  console.warn(`Removing ${repository} from TSV due to error`);
+                  removedCount++;
                   errorCount++;
                 }
               }
 
-              console.log(`Processed: ${processedCount}, Errors: ${errorCount}`);
+              console.log(`Processed: ${processedCount}, Errors: ${errorCount}, Removed: ${removedCount}`);
 
               // 3. 生成新的 TSV 内容
               const newTsvContent = generateTSV(updatedRows);
@@ -401,6 +442,7 @@ jobs:
           echo "📊 **Statistics Update Complete**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "✅ Updated creations.tsv with statistics from .voting.json files" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Removed entries for repositories that no longer exist or lack .voting.json" >> $GITHUB_STEP_SUMMARY
           echo "✅ Generated 5 ranking markdown files" >> $GITHUB_STEP_SUMMARY
           echo "✅ Compressed and updated creations.zip" >> $GITHUB_STEP_SUMMARY
 
