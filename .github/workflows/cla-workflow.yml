@@ -88,7 +88,6 @@ jobs:
               const repoInfo = JSON.parse(repoJson);
               return {
                 owner: repoInfo.owner || '',
-                pen_name: repoInfo.pen_name || '',
                 repo: repoInfo.repo || '',
                 name: repoInfo.name || '',
                 description: repoInfo.description || '',
@@ -226,7 +225,7 @@ jobs:
                   tsvSha = creationsFile.sha;
                 } else {
                   // 创建新的 TSV 文件，包含表头
-                  tsvContent = 'repository\tcreatedAt\tname\tpen_name\tdescription\tlanguage\tcategory\tarticles\tauthors\treaders\tlikes\thates\tpass\tdaily_voting\n';
+                  tsvContent = 'repository\tcreatedAt\tname\tdescription\tlanguage\tcategory\tarticles\tauthors\treaders\tlikes\thates\tpass\tdaily_voting\n';
                 }
 
                 // 检查是否已存在
@@ -237,12 +236,11 @@ jobs:
                   // 添加新行
                   const createdAt = new Date().toISOString();
                   const name = (repoInfo.name || '').replace(/\t/g, ' ');
-                  const pen_name = (repoInfo.pen_name || '').replace(/\t/g, ' ');
                   const description = (repoInfo.description || '').replace(/\t/g, ' ');
                   const language = (repoInfo.language || '').replace(/\t/g, ' ');
                   const category = (repoInfo.category || '').replace(/\t/g, ' ');
                   
-                  const newRow = `${repository}\t${createdAt}\t${name}\t${pen_name}\t${description}\t${language}\t${category}\t1\t1\t0\t0\t0\t0\t0\n`;
+                  const newRow = `${repository}\t${createdAt}\t${name}\t${description}\t${language}\t${category}\t1\t1\t0\t0\t0\t0\t0\n`;
                   tsvContent += newRow;
                   
                   // 保存 TSV 文件
